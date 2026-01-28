@@ -114,6 +114,7 @@ class BaseAgentBuilder:
         response = self._invoke_llm_with_retry(messages, config)
         
         response.additional_kwargs["request_id"] = config["configurable"]["request_id"]
+        response.additional_kwargs["selected_agent"] = state.get("selected_agent")
 
         logging.debug("model call finished")
 
@@ -140,7 +141,10 @@ class BaseAgentBuilder:
         for tool_call in getattr(state["messages"][-1], "tool_calls", []):
             should_continue, interrupt_message = handle_interrupt(getattr(self.agent_config, "human_validation_tools", []), tool_call)
 
-            additional_kwargs = { "request_id": request_id }
+            additional_kwargs = {
+                "request_id": request_id,
+                "selected_agent": state.get("selected_agent")
+            }
 
             if interrupt_message:
                 additional_kwargs["interrupt_message"] = interrupt_message
