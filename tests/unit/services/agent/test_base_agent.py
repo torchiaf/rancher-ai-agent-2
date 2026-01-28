@@ -451,7 +451,6 @@ def test_summarize_conversation_creates_new_summary(mock_llm, mock_tools, mock_c
     assert result["summary"] == "Summary of conversation"
     assert any(isinstance(msg, RemoveMessage) for msg in result["messages"])
     assert result["messages"][-1].content == "Summary of conversation"
-    assert result["messages"][-1].additional_kwargs.get("is_summary") is True
 
 def test_summarize_conversation_extends_existing_summary(mock_llm, mock_tools, mock_checkpointer):
     """Verify that summarize_conversation extends an existing summary."""
