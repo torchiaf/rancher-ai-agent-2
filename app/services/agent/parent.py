@@ -92,7 +92,7 @@ INSTRUCTIONS:
 3. Consider the full conversation context if available
 4. Respond with ONLY the exact name of the selected child agent (no explanations or extra text)
 5. You MUST choose exactly one agent - never return multiple names or explanations
-6. If the request is ambiguous or could match multiple agents, default to 'Rancher'
+6. If the request is ambiguous or could match multiple agents, default to 'rancher'
 
 """
         router_prompt += "AVAILABLE CHILD AGENTS:\n"
