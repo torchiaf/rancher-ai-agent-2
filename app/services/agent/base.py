@@ -528,7 +528,8 @@ You are a highly specialized Assistant. Your primary goal is to provide accurate
         interrupt_messages = {}
         for idx, tool_call in enumerate(tool_calls):
             should_continue, interrupt_message, ui_tools_list = await self.handle_interrupt(human_validation_tools, tool_call, state, config)
-            if not should_continue:
+
+            if should_continue is False:
                 # Cancel ALL tool calls: previously approved ones, the rejected one,
                 # and any remaining unevaluated ones — no tools will be executed.
                 outputs = self._cancel_remaining_tool_calls(tool_calls[:idx], request_id, state, INTERRUPT_CANCEL_MESSAGE)
@@ -547,13 +548,15 @@ You are a highly specialized Assistant. Your primary goal is to provide accurate
                 ))
                 outputs.extend(self._cancel_remaining_tool_calls(tool_calls[idx + 1:], request_id, state, INTERRUPT_CANCEL_MESSAGE))
                 return {"messages": outputs}
+            
             if interrupt_message:
                 interrupt_messages[tool_call["id"]] = {
                     "message": interrupt_message,
-                    "ui_tools": ui_tools_list
+                    "ui_tools": ui_tools_list,
+                    "confirmation-error": should_continue is None
                 }
 
-        # Phase 2: Execute tools (all interrupts were approved if we reach here).
+        # Phase 2: Execute tools (all interrupts were approved OR confirmation errors occurred if we reach here).
         for idx, tool_call in enumerate(tool_calls):
             additional_kwargs = {
                 "request_id": request_id,
@@ -567,6 +570,10 @@ You are a highly specialized Assistant. Your primary goal is to provide accurate
                 additional_kwargs["ui_tools"] = interrupt_message["ui_tools"]
             
             try:
+                # If there was an error during interrupt message generation, we don't execute the tool and instead return an error message to the user.
+                if interrupt_message and interrupt_message.get("confirmation-error"):
+                    raise ToolException(f"Tool call requires confirmation, but an error occurred during interrupt message generation: {interrupt_message['message']}")
+
                 logging.debug("calling tool")
                 tool_result = await self.tools_by_name[tool_call["name"]].ainvoke(tool_call["args"])
                 logging.debug("tool call finished")
