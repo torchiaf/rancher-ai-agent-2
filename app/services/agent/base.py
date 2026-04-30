@@ -675,7 +675,7 @@ You are a highly specialized Assistant. Your primary goal is to provide accurate
         
         return "continue"
     
-    async def should_interrupt(self, human_validation_tools: list[str], tool_call: any) -> str:
+    async def should_interrupt(self, human_validation_tools: list[str], tool_call: any) -> tuple[bool | None, str]:
         """
         Checks if a tool call requires user confirmation and generates an interrupt message.
 
@@ -683,8 +683,14 @@ You are a highly specialized Assistant. Your primary goal is to provide accurate
             tool_call: The tool call dictionary from the LLM.
 
         Returns:
-            A formatted string to trigger a langgraph.types.interrupt, or an empty string
-            if no interruption is needed.
+            A tuple of (should_interrupt, interrupt_message) where:
+            - should_interrupt:
+              - True if the tool call requires interruption for confirmation, False otherwise
+              - None if an error occurs during interrupt message generation
+            - interrupt_message:
+              - A formatted string to trigger a langgraph.types.interrupt
+              - an empty string if no interrupt is needed
+              - an error message if an error occurs during interrupt message generation (should_interrupt will be None in this case)
         """
         for tool_name in human_validation_tools:
             if tool_name == tool_call["name"]:
@@ -692,7 +698,11 @@ You are a highly specialized Assistant. Your primary goal is to provide accurate
                 plan_tool = self.planning_tools_by_name.get(plan_tool_name)
                 if plan_tool is None:
                     raise ValueError(f"planning tool '{plan_tool_name}' not found for tool '{tool_call['name']}'")
-                plan_response = await plan_tool.ainvoke(tool_call["args"])
+                try:
+                    plan_response = await plan_tool.ainvoke(tool_call["args"])
+                except Exception as e:
+                    logging.error(f"error invoking planning tool '{plan_tool_name}' for interrupt: {e}")
+                    return None, f"error invoking planning tool '{plan_tool_name}' for interrupt: {e}"
 
                 # Normalize list response from MCP tools: [{"type": "text", "text": "..."}]
                 if isinstance(plan_response, list) and len(plan_response) > 0:
@@ -703,9 +713,9 @@ You are a highly specialized Assistant. Your primary goal is to provide accurate
                     safe_response = json.dumps(json.loads(plan_response))
                 except (json.JSONDecodeError, TypeError):
                     safe_response = json.dumps(plan_response)
-                return f'<confirmation-response>{safe_response}</confirmation-response>'
+                return True, safe_response
 
-        return ""
+        return False, ""
 
     async def handle_interrupt(self, human_validation_tools: list[str], tool_call: dict, state: AgentState, config: RunnableConfig = None) -> tuple[bool, str | None, list[dict]]:
         """Handles the user confirmation interrupt for a tool call.
