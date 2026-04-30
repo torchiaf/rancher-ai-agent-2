@@ -751,13 +751,14 @@ You are a highly specialized Assistant. Your primary goal is to provide accurate
         if should_interrupt:
             logging.info(f"Confirmation interrupt triggered for tool '{tool_call.get('name')}', config={'present' if config else 'missing'}")
             
-            # Dispatch UI tools before the interrupt, so they're available to the client
+            # Build UI tools to embed in interrupt message payload
+            # This ensures UI tools reach the client BEFORE the stream pauses on interrupt
             ui_tools_list = []
             if config is not None:
                 try:
                     data = json.loads(interrupt_message)
                     if isinstance(data, list) and len(data) > 0:
-                        data = data[0]
+                        data = data[len(data)-1]
                         
                     # Build ui tool
                     resource = data.get("resource", {})
@@ -781,14 +782,16 @@ You are a highly specialized Assistant. Your primary goal is to provide accurate
                         "toolName": ui_tool_name,
                         "input": input,
                     }]
-                    self._dispatch_preprocessed_ui_tools(state, config, ui_tools_list)
                 except Exception as e:
-                    logging.debug(f"Could not extract precomputed fields from interrupt message and dispatch UI tools: {e}")
+                    logging.debug(f"Could not extract precomputed fields from interrupt message: {e}")
 
             else:
-                logging.warning("config is None, cannot dispatch UI tools before confirmation")
+                logging.debug("config is None, UI tools will not be included in interrupt message")
             
-            interrupt_message_result = build_interrupt_message_result(interrupt_message)
+            interrupt_message_result = build_interrupt_message_result({
+                "confirmation": interrupt_message,
+                "uiTools": ui_tools_list
+            })
 
             response = langgraph.types.interrupt(interrupt_message_result)
             if response != "yes":
@@ -845,7 +848,7 @@ def process_tool_result(tool_result: str | list, state: AgentState) -> tuple[str
     
 def build_interrupt_message_result(interrupt_message) -> str:
     """Builds the interrupt message content based on the tool call and its planning response."""
-    return f"<confirmation-response>{interrupt_message}</confirmation-response>"
+    return f"<confirmation-response>{json.dumps(interrupt_message)}</confirmation-response>"
 
 
 def convert_to_string_if_needed(var):
