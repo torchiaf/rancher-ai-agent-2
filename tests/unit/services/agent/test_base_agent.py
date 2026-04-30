@@ -31,6 +31,16 @@ class MockTool:
         self._return_value = return_value
         self.ainvoke = AsyncMock(return_value=return_value)
 
+
+class MockAsyncTool:
+    """Mock async tool for testing error handling."""
+    def __init__(self, name, error=None, return_value=None):
+        self.name = name
+        if error:
+            self.ainvoke = AsyncMock(side_effect=error)
+        else:
+            self.ainvoke = AsyncMock(return_value=return_value)
+
 @pytest.fixture
 def mock_llm():
     llm = MagicMock()
@@ -915,10 +925,10 @@ async def test_should_interrupt_returns_message_for_update_tools(mock_llm, mock_
         }
     }
     
-    result = await builder.should_interrupt(validation_tools, tool_call)
+    should_interrupt, interrupt_message = await builder.should_interrupt(validation_tools, tool_call)
     
-    assert "<confirmation-response>" in result
-    assert "plan response for patching" in result
+    assert should_interrupt is True
+    assert "plan response for patching" in interrupt_message
 
 @pytest.mark.asyncio
 async def test_should_interrupt_returns_empty_for_non_validated_tools(mock_llm, mock_checkpointer):
@@ -938,9 +948,10 @@ async def test_should_interrupt_returns_empty_for_non_validated_tools(mock_llm, 
         "args": {}
     }
     
-    result = await builder.should_interrupt(validation_tools, tool_call)
+    should_interrupt, interrupt_message = await builder.should_interrupt(validation_tools, tool_call)
     
-    assert result == ""
+    assert should_interrupt is False
+    assert interrupt_message == ""
 
 @pytest.mark.asyncio
 async def test_handle_interrupt_cancels_on_no_response(mock_llm, mock_checkpointer):
@@ -969,10 +980,11 @@ async def test_handle_interrupt_cancels_on_no_response(mock_llm, mock_checkpoint
     }
     
     with patch("langgraph.types.interrupt", return_value="no"):
-        should_continue, interrupt_msg, _ = await builder.handle_interrupt(validation_tools, tool_call, {})
+        should_continue, interrupt_msg, ui_tools = await builder.handle_interrupt(validation_tools, tool_call, {})
     
     assert should_continue is False
     assert interrupt_msg is not None
+    assert isinstance(ui_tools, list)
 
 @pytest.mark.asyncio
 async def test_handle_interrupt_continues_on_yes_response(mock_llm, mock_checkpointer):
@@ -1001,10 +1013,11 @@ async def test_handle_interrupt_continues_on_yes_response(mock_llm, mock_checkpo
     }
     
     with patch("langgraph.types.interrupt", return_value="yes"):
-        should_continue, interrupt_msg, _ = await builder.handle_interrupt(validation_tools, tool_call, {})
+        should_continue, interrupt_msg, ui_tools = await builder.handle_interrupt(validation_tools, tool_call, {})
     
     assert should_continue is True
     assert interrupt_msg is not None
+    assert isinstance(ui_tools, list)
 
 def test_process_tool_result_handles_mcp_response_with_ui_context():
     """Verify MCP responses with uiContext are properly extracted."""
@@ -1106,6 +1119,58 @@ async def test_handle_interrupt_dispatches_subagent_choice_event(mock_interrupt,
     # The payload should contain the agent metadata formatted as expected by build_agent_metadata
     assert event_name == "subagent_choice_event"
     assert '<agent-metadata>{"agentName": "rancher", "selectionMode": "auto"}</agent-metadata>' in event_payload
+
+@pytest.mark.asyncio
+async def test_should_interrupt_returns_error_when_planning_tool_fails(mock_llm, mock_checkpointer):
+    """Verify should_interrupt returns (None, error_message) when planning tool raises exception."""
+    validation_tools = ["patchKubernetesResource"]
+    plan_tool = MockAsyncTool("patchKubernetesResourcePlan", error=Exception("Planning tool failed"))
+    regular_tool = MockTool("patchKubernetesResource", "patched")
+
+    builder = BaseAgentBuilder(
+        llm=mock_llm,
+        tools=[regular_tool, plan_tool],
+        system_prompt="system_prompt",
+        checkpointer=mock_checkpointer,
+        agent_config=MagicMock()
+    )
+
+    tool_call = {
+        "name": "patchKubernetesResource",
+        "args": {"patch": "[]", "name": "test", "kind": "Pod", "cluster": "local", "namespace": "default"}
+    }
+    
+    should_interrupt, error_message = await builder.should_interrupt(validation_tools, tool_call)
+    
+    assert should_interrupt is None
+    assert "Planning tool failed" in error_message
+    assert "patchKubernetesResourcePlan" in error_message
+
+@pytest.mark.asyncio
+async def test_handle_interrupt_returns_error_when_planning_tool_fails(mock_llm, mock_checkpointer):
+    """Verify handle_interrupt returns (None, error_message, []) when should_interrupt fails."""
+    validation_tools = ["patchKubernetesResource"]
+    plan_tool = MockAsyncTool("patchKubernetesResourcePlan", error=Exception("Planning tool failed"))
+    regular_tool = MockTool("patchKubernetesResource", "patched")
+
+    builder = BaseAgentBuilder(
+        llm=mock_llm,
+        tools=[regular_tool, plan_tool],
+        system_prompt="system_prompt",
+        checkpointer=mock_checkpointer,
+        agent_config=MagicMock()
+    )
+
+    tool_call = {
+        "name": "patchKubernetesResource",
+        "args": {"patch": "[]", "name": "test", "kind": "Pod", "cluster": "local", "namespace": "default"}
+    }
+    
+    should_continue, error_message, ui_tools = await builder.handle_interrupt(validation_tools, tool_call, {})
+    
+    assert should_continue is None
+    assert "Planning tool failed" in error_message
+    assert ui_tools == []
 
 def test_convert_to_string_if_needed_converts_dict():
     """Verify dicts are converted to JSON strings."""
