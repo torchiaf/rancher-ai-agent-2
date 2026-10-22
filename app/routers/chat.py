@@ -247,3 +247,206 @@ async def get_chat_messages(request: Request, chat_id: str) -> JSONResponse:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             content={"detail": "Internal server error"}
         )
+
+
+@router.get("/chats/stats/daily")
+async def get_daily_stats(request: Request, days: int = 7) -> JSONResponse:
+    """
+    Get daily aggregated token usage and cost statistics.
+
+    Args:
+        days: Number of days to look back (default 7)
+
+    Returns:
+        List of daily statistics with token counts and costs.
+    """
+    try:
+        user_id = await get_user_id_from_token(request.cookies)
+        
+        if not user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+
+        stats = await request.app.memory_manager.get_daily_stats(user_id, days)
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={"data": stats}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error getting daily stats for user_id {user_id}: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Internal server error"}
+        )
+
+
+@router.get("/chats/stats/agents")
+async def get_agent_stats(request: Request) -> JSONResponse:
+    """
+    Get agent-level statistics including token counts, costs, and averages.
+
+    Returns:
+        Dict with per-agent statistics.
+    """
+    try:
+        user_id = await get_user_id_from_token(request.cookies)
+        
+        if not user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+
+        stats = await request.app.memory_manager.get_agent_stats(user_id)
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={"data": stats}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error getting agent stats for user_id {user_id}: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Internal server error"}
+        )
+
+
+@router.get("/chats/analytics/costs")
+async def get_cost_analytics(request: Request) -> JSONResponse:
+    """
+    Get cost breakdown by type (input, output, cache read, cache creation).
+
+    Returns:
+        Dict with total cost and cost breakdown by type.
+    """
+    try:
+        user_id = await get_user_id_from_token(request.cookies)
+        
+        if not user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+
+        summary = await request.app.memory_manager.get_cost_summary(user_id)
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content=summary
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error getting cost analytics for user_id {user_id}: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Internal server error"}
+        )
+
+
+@router.get("/chats/top/expensive")
+async def get_expensive_chats(request: Request, limit: int = 10) -> JSONResponse:
+    """
+    Get the top most expensive chats ranked by USD cost.
+
+    Args:
+        limit: Maximum number of chats to return (default 10)
+
+    Returns:
+        List of chat objects with calculated costs, sorted by cost descending.
+    """
+    try:
+        user_id = await get_user_id_from_token(request.cookies)
+        
+        if not user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+
+        chats = await request.app.memory_manager.get_top_expensive_chats(user_id, limit)
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={"data": chats}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error getting expensive chats for user_id {user_id}: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Internal server error"}
+        )
+
+
+@router.get("/chats/analytics")
+async def get_analytics_summary(request: Request, period: str = "7d") -> JSONResponse:
+    """
+    Get comprehensive analytics summary for a time period.
+
+    Args:
+        period: Time period in format like "7d", "30d" (default "7d")
+
+    Returns:
+        Dict with summary, daily breakdown, and agent breakdown.
+    """
+    try:
+        user_id = await get_user_id_from_token(request.cookies)
+        
+        if not user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+
+        # Parse period string (e.g., "7d" -> 7)
+        period_days = 7
+        if period.endswith("d"):
+            try:
+                period_days = int(period[:-1])
+            except ValueError:
+                period_days = 7
+
+        summary = await request.app.memory_manager.get_analytics_summary(user_id, period_days)
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content=summary
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error getting analytics summary for user_id {user_id}: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Internal server error"}
+        )
+
+
+@router.get("/chats/cost")
+async def get_cost_summary(request: Request) -> JSONResponse:
+    """
+    Get quick cost summary for all chats.
+
+    Returns:
+        Dict with total USD cost and breakdown by type.
+    """
+    try:
+        user_id = await get_user_id_from_token(request.cookies)
+        
+        if not user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+
+        summary = await request.app.memory_manager.get_cost_summary(user_id)
+        
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content=summary
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error getting cost summary for user_id {user_id}: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Internal server error"}
+        )

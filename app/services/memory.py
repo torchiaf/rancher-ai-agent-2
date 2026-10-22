@@ -3,6 +3,7 @@ import re
 import logging
 from enum import Enum
 from typing import cast
+from datetime import datetime, timezone, timedelta
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.memory import InMemorySaver
@@ -11,6 +12,14 @@ from langchain_core.runnables.config import RunnableConfig
 
 from ..services.agent.loader import DEFAULT_AGENT_NAME
 from ..constants import CONTEXT_PARAMETERS_SUFFIX
+
+# Token pricing in USD per token (adjust based on your LLM provider)
+TOKEN_PRICING = {
+    "input": 0.0005,           # $0.0005 per input token
+    "output": 0.0015,          # $0.0015 per output token
+    "cache_read": 0.00005,     # $0.00005 per cache read token (90% discount)
+    "cache_creation": 0.0015,  # $0.0015 per cache creation token (same as output)
+}
 
 class StorageType(str, Enum):
     """Enum for different types of memory storage."""
@@ -265,6 +274,231 @@ class MemoryManager:
                     totals[field_map[field]] += value
 
         return {**totals, "byAgent": by_agent}
+
+    def _calculate_cost(self, usage: dict) -> float:
+        """Calculate USD cost from token usage dict.
+        
+        Args:
+            usage: Token usage dict with inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens
+            
+        Returns:
+            Cost in USD as float
+        """
+        cost = 0.0
+        cost += usage.get("inputTokens", 0) * TOKEN_PRICING["input"]
+        cost += usage.get("outputTokens", 0) * TOKEN_PRICING["output"]
+        cost += usage.get("cacheReadTokens", 0) * TOKEN_PRICING["cache_read"]
+        cost += usage.get("cacheCreationTokens", 0) * TOKEN_PRICING["cache_creation"]
+        return cost
+
+    async def get_daily_stats(self, user_id: str, days: int = 7) -> list[dict]:
+        """Get aggregated token usage statistics grouped by date.
+        
+        Args:
+            user_id: The ID of the user
+            days: Number of days to look back (default 7)
+            
+        Returns:
+            List of dicts with date, tokens, and cost breakdown
+        """
+        daily_stats: dict[str, dict] = {}
+        
+        # Get all chats for the user
+        chats = await self.fetch_chats(user_id)
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
+        
+        for chat in chats:
+            created_at = chat.get("createdAt")
+            if not created_at:
+                continue
+                
+            # Parse ISO format datetime
+            try:
+                if isinstance(created_at, str):
+                    chat_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                else:
+                    chat_date = created_at
+                    
+                if chat_date < cutoff_date:
+                    continue
+                    
+                date_key = chat_date.date().isoformat()
+            except (ValueError, AttributeError):
+                continue
+            
+            usage = chat.get("usage", {})
+            if not usage:
+                continue
+                
+            if date_key not in daily_stats:
+                daily_stats[date_key] = {
+                    "date": date_key,
+                    "inputTokens": 0,
+                    "outputTokens": 0,
+                    "totalTokens": 0,
+                    "cacheReadTokens": 0,
+                    "cacheCreationTokens": 0,
+                    "costUSD": 0.0,
+                    "chatCount": 0,
+                }
+            
+            daily_stats[date_key]["inputTokens"] += usage.get("inputTokens", 0)
+            daily_stats[date_key]["outputTokens"] += usage.get("outputTokens", 0)
+            daily_stats[date_key]["totalTokens"] += usage.get("totalTokens", 0)
+            daily_stats[date_key]["cacheReadTokens"] += usage.get("cacheReadTokens", 0)
+            daily_stats[date_key]["cacheCreationTokens"] += usage.get("cacheCreationTokens", 0)
+            daily_stats[date_key]["chatCount"] += 1
+        
+        # Calculate costs for each day
+        for day_stat in daily_stats.values():
+            day_stat["costUSD"] = self._calculate_cost(day_stat)
+        
+        # Sort by date descending
+        return sorted(daily_stats.values(), key=lambda x: x["date"], reverse=True)
+
+    async def get_agent_stats(self, user_id: str) -> dict[str, dict]:
+        """Get aggregated statistics broken down by agent.
+        
+        Args:
+            user_id: The ID of the user
+            
+        Returns:
+            Dict with agent names as keys and their stats as values
+        """
+        agent_stats: dict[str, dict] = {}
+        chats = await self.fetch_chats(user_id)
+        
+        for chat in chats:
+            usage = chat.get("usage", {})
+            if not usage:
+                continue
+                
+            by_agent = usage.get("byAgent", {})
+            for agent_name, agent_usage in by_agent.items():
+                if agent_name not in agent_stats:
+                    agent_stats[agent_name] = {
+                        "agent": agent_name,
+                        "inputTokens": 0,
+                        "outputTokens": 0,
+                        "totalTokens": 0,
+                        "cacheReadTokens": 0,
+                        "cacheCreationTokens": 0,
+                        "costUSD": 0.0,
+                        "chatCount": 0,
+                        "avgInputPerChat": 0.0,
+                        "avgOutputPerChat": 0.0,
+                    }
+                
+                agent_stats[agent_name]["inputTokens"] += agent_usage.get("inputTokens", 0)
+                agent_stats[agent_name]["outputTokens"] += agent_usage.get("outputTokens", 0)
+                agent_stats[agent_name]["totalTokens"] += agent_usage.get("totalTokens", 0)
+                agent_stats[agent_name]["cacheReadTokens"] += agent_usage.get("cacheReadTokens", 0)
+                agent_stats[agent_name]["cacheCreationTokens"] += agent_usage.get("cacheCreationTokens", 0)
+                agent_stats[agent_name]["chatCount"] += 1
+        
+        # Calculate costs and averages
+        for agent_stat in agent_stats.values():
+            agent_stat["costUSD"] = self._calculate_cost(agent_stat)
+            chat_count = agent_stat["chatCount"]
+            if chat_count > 0:
+                agent_stat["avgInputPerChat"] = agent_stat["inputTokens"] / chat_count
+                agent_stat["avgOutputPerChat"] = agent_stat["outputTokens"] / chat_count
+        
+        return agent_stats
+
+    async def get_top_expensive_chats(self, user_id: str, limit: int = 10) -> list[dict]:
+        """Get the most expensive chats ranked by USD cost.
+        
+        Args:
+            user_id: The ID of the user
+            limit: Max number of chats to return (default 10)
+            
+        Returns:
+            Sorted list of chat objects with cost calculated
+        """
+        chats = await self.fetch_chats(user_id)
+        
+        # Calculate cost for each chat
+        for chat in chats:
+            usage = chat.get("usage", {})
+            chat["costUSD"] = self._calculate_cost(usage)
+        
+        # Sort by cost descending and limit
+        return sorted(chats, key=lambda x: x["costUSD"], reverse=True)[:limit]
+
+    async def get_analytics_summary(self, user_id: str, period_days: int = 7) -> dict:
+        """Get a comprehensive analytics summary for a period.
+        
+        Args:
+            user_id: The ID of the user
+            period_days: Number of days to aggregate (default 7)
+            
+        Returns:
+            Dict with overall stats, daily breakdown, and agent breakdown
+        """
+        daily_stats = await self.get_daily_stats(user_id, period_days)
+        agent_stats = await self.get_agent_stats(user_id)
+        chats = await self.fetch_chats(user_id)
+        
+        # Calculate totals
+        total_input = 0
+        total_output = 0
+        total_tokens = 0
+        total_cost = 0.0
+        
+        for chat in chats:
+            usage = chat.get("usage", {})
+            total_input += usage.get("inputTokens", 0)
+            total_output += usage.get("outputTokens", 0)
+            total_tokens += usage.get("totalTokens", 0)
+            total_cost += self._calculate_cost(usage)
+        
+        return {
+            "period": f"{period_days}d",
+            "summary": {
+                "totalChats": len(chats),
+                "totalTokens": total_tokens,
+                "inputTokens": total_input,
+                "outputTokens": total_output,
+                "totalCostUSD": round(total_cost, 4),
+                "avgCostPerChat": round(total_cost / len(chats), 4) if chats else 0.0,
+            },
+            "byDay": daily_stats,
+            "byAgent": agent_stats,
+        }
+
+    async def get_cost_summary(self, user_id: str) -> dict:
+        """Get a quick cost summary for all chats.
+        
+        Args:
+            user_id: The ID of the user
+            
+        Returns:
+            Dict with total cost breakdown
+        """
+        chats = await self.fetch_chats(user_id)
+        
+        total_cost = 0.0
+        cost_breakdown = {
+            "inputCost": 0.0,
+            "outputCost": 0.0,
+            "cacheReadCost": 0.0,
+            "cacheCreationCost": 0.0,
+        }
+        
+        for chat in chats:
+            usage = chat.get("usage", {})
+            cost_breakdown["inputCost"] += usage.get("inputTokens", 0) * TOKEN_PRICING["input"]
+            cost_breakdown["outputCost"] += usage.get("outputTokens", 0) * TOKEN_PRICING["output"]
+            cost_breakdown["cacheReadCost"] += usage.get("cacheReadTokens", 0) * TOKEN_PRICING["cache_read"]
+            cost_breakdown["cacheCreationCost"] += usage.get("cacheCreationTokens", 0) * TOKEN_PRICING["cache_creation"]
+        
+        total_cost = sum(cost_breakdown.values())
+        
+        return {
+            "totalCostUSD": round(total_cost, 4),
+            "breakdown": {k: round(v, 4) for k, v in cost_breakdown.items()},
+        }
 
     async def fetch_chat(self, chat_id: str, user_id: str) -> dict | None:
         """
