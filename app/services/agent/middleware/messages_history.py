@@ -66,18 +66,28 @@ def usage_entry_from_response(response: Any, source: str) -> dict | None:
     if not raw:
         return None
 
-    input_tokens = raw.get("input_tokens", raw.get("prompt_tokens", 0)) or 0
-    output_tokens = raw.get("output_tokens", raw.get("completion_tokens", 0)) or 0
-    total_tokens = raw.get("total_tokens", input_tokens + output_tokens) or 0
+    input_tokens = raw.get("input_tokens") or raw.get("prompt_tokens") or 0
+    output_tokens = raw.get("output_tokens") or raw.get("completion_tokens") or 0
+    total_tokens = raw.get("total_tokens") or (input_tokens + output_tokens) or 0
     if not (input_tokens or output_tokens or total_tokens):
         return None
+    
+    # Try to extract cache info from response_metadata if available
+    # (Anthropic and other providers may include cache stats here)
+    cache_read = 0
+    cache_creation = 0
+    usage_metadata_details = raw.get("usage_metadata") or {}
+    input_token_details = raw.get("input_token_details") or usage_metadata_details.get("input_token_details") or {}
+    cache_read = input_token_details.get("cache_read", 0) or 0
+    cache_creation = input_token_details.get("cache_creation", 0) or 0
+    
     return {
         "source": source,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
-        "cache_read": 0,
-        "cache_creation": 0,
+        "cache_read": cache_read,
+        "cache_creation": cache_creation,
     }
 
 

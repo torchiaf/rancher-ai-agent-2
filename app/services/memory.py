@@ -260,7 +260,7 @@ class MemoryManager:
 
                 agent_totals = by_agent.setdefault(bucket, _empty())
                 for field in fields:
-                    value = entry.get(field, 0) or 0
+                    value = entry.get(field, 0)
                     agent_totals[field_map[field]] += value
                     totals[field_map[field]] += value
 
@@ -349,23 +349,29 @@ class MemoryManager:
 
     async def fetch_messages(self, chat_id: str, user_id: str, filters: dict = {}) -> list:
         """
-        TODO: implement tags filtering logic.
         Fetch messages from the database based on filter configuration.
+        Supports filtering by tags and limiting results.
 
         Args:
             chat_id: The ID of the chat thread.
             user_id: The ID of the user.
-            filters: A dictionary to filter messages.
+            filters: A dictionary to filter messages with keys:
+                - tag_filters: list of {role: [tags]} dicts to exclude
+                - limit: max number of messages to return
         Returns:
-            A list of message records.
+            A list of message records filtered by tag_filters and limit.
             
         Filters example:
-            tag_filters = [
-                { "human": ["welcome"] },
-                { "ai": ["welcome"] },
-            ]
+            filters = {
+                "tag_filters": [
+                    { "human": ["welcome"] },
+                    { "ai": ["welcome"] },
+                ],
+                "limit": 100
+            }
         """
         limit = filters.get("limit")
+        tag_filters = filters.get("tag_filters", [])
 
         rows = []
         
@@ -378,6 +384,14 @@ class MemoryManager:
         all_messages = checkpoint_tuple.checkpoint.get("channel_values", {}).get("messages_history", [])
 
         for message in all_messages:
+            # Apply tag filtering if configured
+            if tag_filters and message.type in ("human", "ai"):
+                request_metadata = message.additional_kwargs.get("request_metadata", {})
+                tags = request_metadata.get("tags", [])
+                # Skip this message if it matches any tag filter
+                if not self._filter_by_tags(tag_filters, tags, message.type):
+                    continue
+            
             if message.type == 'human' and message.content != "":
                 request_metadata = message.additional_kwargs.get("request_metadata", {})
                 tags = request_metadata.get("tags", [])

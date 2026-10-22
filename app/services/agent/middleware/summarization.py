@@ -14,9 +14,14 @@ NOTE: This couples to LangChain's ``SummarizationMiddleware`` internals
 (``_ensure_message_ids``, ``_should_summarize``, ``_determine_cutoff_index``,
 ``_partition_messages``, ``_build_new_messages``, ``_trim_messages_for_summary``).
 LangChain is pinned in pyproject.toml; revisit on upgrade.
-"""
 
-## TODO! try to find a better alternative so we don't have to couple to langchain internals. Maybe a new hook in langchain's SummarizationMiddleware that returns the response object instead of just the text, so we can read usage_metadata from it.
+KNOWN LIMITATION: Ideally, LangChain's SummarizationMiddleware would provide a
+hook to capture the response object (with usage_metadata) before converting to
+text. This would eliminate the need to couple to private APIs. Consider:
+1. Contributing this improvement to LangChain upstream
+2. Evaluating custom summarization implementations in future versions
+3. Monitoring LangChain releases for a public API
+"""
 
 import logging
 import uuid
